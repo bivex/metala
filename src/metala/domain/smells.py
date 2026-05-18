@@ -15,6 +15,18 @@ class SmellKind(StrEnum):
     MAGIC_NUMBER = "magic_number"
     UNUSED_PARAMETER = "unused_parameter"
     EXCESSIVE_LOCALS = "excessive_locals"
+    SWITCH_STATEMENT = "switch_statement"
+    MESSAGE_CHAIN = "message_chain"
+    DATA_CLUMP = "data_clump"
+    FEATURE_ENVY = "feature_envy"
+    PRIMITIVE_OBSESSION = "primitive_obsession"
+    MIDDLE_MAN = "middle_man"
+    SPECULATIVE_GENERALITY = "speculative_generality"
+    DIVERGENT_CHANGE = "divergent_change"
+    SHOTGUN_SURGERY = "shotgun_surgery"
+    TEMPORARY_FIELD = "temporary_field"
+    REFUSED_BEQUEST = "refused_bequest"
+    COMMENT_DENSITY = "comment_density"
 
 
 @dataclass(frozen=True, slots=True)

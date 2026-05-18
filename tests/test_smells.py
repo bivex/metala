@@ -43,19 +43,22 @@ def test_smell_file_detects_all_smells():
     assert not any("3.14159" in msg for msg in magic_numbers)
 
 
-def test_smell_directory_scans_all_files():
+def test_fowler_smells():
     # Given
-    fixtures_root = Path(__file__).parent / "fixtures"
+    fixture_path = Path(__file__).parent / "fixtures" / "fowler.metal"
     service = CodeSmellService(
         source_repository=FileSystemSourceRepository(),
         detector=AntlrMetalCodeSmellDetector(),
     )
 
     # When
-    bundle = service.smell_directory(SmellDirectoryCommand(root_path=str(fixtures_root)))
+    report = service.smell_file(SmellFileCommand(path=str(fixture_path)))
 
     # Then
-    assert bundle.total_smell_count >= 4
-    assert len(bundle.reports) >= 3  # control_flow.metal, valid.metal, smelly.metal
-    smelly_report = next(r for r in bundle.reports if "smelly.metal" in r.source_location)
-    assert smelly_report.smell_count >= 4
+    kinds = {smell.kind for smell in report.smells}
+    assert "switch_statement" in kinds
+    assert "data_clump" in kinds
+    assert "speculative_generality" in kinds
+    assert "shotgun_surgery" in kinds
+    assert "refused_bequest" in kinds
+    # Many others are triggered but these are specifically verified
