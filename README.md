@@ -68,13 +68,13 @@ The Nassi-Shneiderman diagrams include:
 
 ### Screenshots
 
-**Basic control flow** — loops, guards, and switch/case blocks:
+**Basic control flow** — for-in, if/else, while, do-while, switch/case on `score()`:
 
-![Basic NS diagram](docs/screenshots/nassi_diagram.png)
+![Basic control flow](docs/screenshots/nassi_basic.png)
 
-**Nested conditionals** — depth-coded badges and colors for up to 50 nesting levels:
+**Nested conditionals** — depth-coded badges and cycling colours for 6 levels of nesting:
 
-![Nested depth diagram](docs/screenshots/nested_depth.png)
+![Nested depth diagram](docs/screenshots/nassi_nested_depth.png)
 
 ## Architecture
 

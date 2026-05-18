@@ -1,6 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// Basic control flow demo: for, if-else, while, do-while, switch
 int score(device const int* values, int count) {
     int total = 0;
 
