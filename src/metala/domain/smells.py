@@ -31,6 +31,24 @@ class SmellKind(StrEnum):
     RESOURCE_OVERLOAD = "resource_overload"
     ATOMIC_CONTENTION = "atomic_contention"
 
+    # GPU-specific Memory Smells
+    THREADGROUP_BANK_CONFLICT = "threadgroup_bank_conflict"
+    NON_COALESCED_ACCESS = "non_coalesced_access"
+    EXCESSIVE_THREADGROUP_ALLOCATION = "excessive_threadgroup_allocation"
+    DEPENDENT_TEXTURE_READ = "dependent_texture_read"
+
+    # GPU-specific Precision Smells
+    HALF_PRECISION_NEGLECT = "half_precision_neglect"
+    TEXTURE_FORMAT_MISMATCH = "texture_format_mismatch"
+
+    # GPU-specific Synchronization Smells
+    THREADGROUP_BARRIER_OVERUSE = "threadgroup_barrier_overuse"
+    SIMDGROUP_OPPORTUNITY_MISSED = "simdgroup_opportunity_missed"
+
+    # GPU-specific Control Flow Smells
+    DIVERGENT_TEXTURE_SAMPLE = "divergent_texture_sample"
+    VERTEX_OUTPUT_BLOAT = "vertex_output_bloat"
+
 
 @dataclass(frozen=True, slots=True)
 class CodeSmell:

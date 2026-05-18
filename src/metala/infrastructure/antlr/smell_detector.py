@@ -78,8 +78,12 @@ class SmellThresholds:
             "thread_position_in_threadgroup",
             "thread_index_in_threadgroup",
             "simdgroup_index_in_threadgroup",
+            "gl_GlobalInvocationID",  # Just in case of GLSL-isms
         }
     )
+    threadgroup_limit_kb: int = 16  # A-series threshold (conservative)
+    simdgroup_size: int = 32  # Typical Apple SIMD size
+    bank_count: int = 16  # Typical banks per SIMD
 
 
 class AntlrMetalCodeSmellDetector(MetalCodeSmellDetector):
@@ -154,6 +158,13 @@ def _SmellVisitor(
             self._in_loop = False
             self._atomic_calls_in_loop = 0
             self._shader_function: bool = False
+            self._threadgroup_allocation = 0  # bytes
+            self._last_barrier_read_count = 0
+            self._last_barrier_write_count = 0
+            self._barrier_calls_count = 0
+            self._texture_reads: list[str] = []  # result variables
+            self._is_inside_divergent_selection = False
+            self._gpu_bound_vars: set[str] = set()  # vars bound to GPU attributes
 
         # -- Class/Struct analysis ----------------------------------------
 
@@ -300,6 +311,7 @@ def _SmellVisitor(
             self._current_params = set()
             self._used_params = set()
             self._resource_count = 0
+            self._gpu_bound_vars = set()
 
             if params:
                 param_decls = params.parameterDeclaration()
@@ -336,7 +348,15 @@ def _SmellVisitor(
                 for p in param_decls:
                     p_name_ctx = p.name()
                     if p_name_ctx:
-                        self._current_params.add(p_name_ctx.getText())
+                        p_name = p_name_ctx.getText()
+                        self._current_params.add(p_name)
+
+                        # Track GPU-bound variables for subscript analysis
+                        p_text = p.getText()
+                        for gpu_id in thresholds.gpu_identifiers:
+                            if gpu_id in p_text:
+                                self._gpu_bound_vars.add(p_name)
+                                break
 
                     # Resource Overload check
                     text = p.getText()
@@ -364,6 +384,9 @@ def _SmellVisitor(
             old_calls = self._function_call_count
             old_touched = self._touched_structs
             old_atomic_calls = self._atomic_calls_in_loop
+            old_threadgroup = self._threadgroup_allocation
+            old_barrier_calls = self._barrier_calls_count
+            old_texture_reads = self._texture_reads
 
             self._current_complexity = 1  # Base complexity
             self._current_nesting = 0
@@ -374,8 +397,23 @@ def _SmellVisitor(
             self._function_call_count = 0
             self._touched_structs = set()
             self._atomic_calls_in_loop = 0
+            self._threadgroup_allocation = 0
+            self._barrier_calls_count = 0
+            self._texture_reads = []
 
             self.visitChildren(ctx)
+
+            # Excessive Threadgroup Allocation
+            if self._threadgroup_allocation > thresholds.threadgroup_limit_kb * 1024:
+                self.smells.append(
+                    CodeSmell(
+                        kind=SmellKind.EXCESSIVE_THREADGROUP_ALLOCATION,
+                        message=f"Function '{name}' allocates {self._threadgroup_allocation/1024:.1f} KB of threadgroup memory; exceeding {thresholds.threadgroup_limit_kb} KB threshold",
+                        location=source_location,
+                        line=start_line,
+                        column=ctx.start.column,
+                    )
+                )
 
             # Atomic Contention in Loop
             if self._atomic_calls_in_loop > 2:
@@ -478,6 +516,9 @@ def _SmellVisitor(
             self._touched_structs = old_touched
             self._resource_count = old_resource_count
             self._atomic_calls_in_loop = old_atomic_calls
+            self._threadgroup_allocation = old_threadgroup
+            self._barrier_calls_count = old_barrier_calls
+            self._texture_reads = old_texture_reads
             self._current_function_name = None
             self._shader_function = False
             return None
@@ -499,6 +540,29 @@ def _SmellVisitor(
                 if init_list:
                     decls = init_list.initDeclarator()
                     self._local_vars_count += len(decls)
+                    
+                    # Threadgroup allocation tracking
+                    is_threadgroup = False
+                    for q in ctx.typeQualifier() or []:
+                        if "threadgroup" in q.getText():
+                            is_threadgroup = True
+                            break
+                    
+                    if is_threadgroup:
+                        # Heuristic for size based on type text
+                        type_text = ctx.typeSpecifier().getText()
+                        size = self._estimate_type_size(type_text)
+                        for d in decls:
+                            decl_text = d.getText()
+                            count = 1
+                            if "[" in decl_text and "]" in decl_text:
+                                # Array detection
+                                import re
+                                match = re.search(r"\[(\d+)\]", decl_text)
+                                if match:
+                                    count = int(match.group(1))
+                            self._threadgroup_allocation += size * count
+
                     # Temporary Field heuristic
                     if self._current_class:
                         for d in decls:
@@ -518,6 +582,27 @@ def _SmellVisitor(
                 if q.Const() or q.Constexpr():
                     is_const = True
                     break
+            
+            # Half precision neglect check
+            if self._shader_function and not is_const:
+                type_text = ctx.typeSpecifier().getText()
+                if "float" in type_text and "half" not in type_text:
+                    # Check if it's used in a context where half is likely enough (e.g. colors)
+                    var_name = ""
+                    init_list = ctx.initDeclaratorList()
+                    if init_list:
+                        var_name = init_list.initDeclarator()[0].declarator().name().getText()
+                    
+                    if any(word in var_name.lower() for word in ["color", "diffuse", "specular", "albedo", "normal"]):
+                        self.smells.append(
+                            CodeSmell(
+                                kind=SmellKind.HALF_PRECISION_NEGLECT,
+                                message=f"Variable '{var_name}' uses full precision 'float'; 'half' is often sufficient for colors/normals on Apple GPU",
+                                location=source_location,
+                                line=ctx.start.line,
+                                column=ctx.start.column,
+                            )
+                        )
 
             old_in_constant = self._in_constant_decl
             self._in_constant_decl = is_const
@@ -525,51 +610,140 @@ def _SmellVisitor(
             self._in_constant_decl = old_in_constant
             return result
 
+        def _estimate_type_size(self, type_text: str) -> int:
+            """Estimate size in bytes for common MSL types."""
+            if "float4" in type_text or "int4" in type_text or "uint4" in type_text: return 16
+            if "float3" in type_text or "int3" in type_text or "uint3" in type_text: return 16 # Alignment
+            if "float2" in type_text or "int2" in type_text or "uint2" in type_text: return 8
+            if "float" in type_text or "int" in type_text or "uint" in type_text: return 4
+            if "half4" in type_text: return 8
+            if "half3" in type_text: return 8 # Alignment
+            if "half2" in type_text: return 4
+            if "half" in type_text: return 2
+            if "bool" in type_text: return 1
+            return 4 # Default
+
         def visitPrimaryExpression(self, ctx):
             name_ctx = ctx.name()
             if name_ctx and self._in_function:
                 # Track usage of identifiers
-                if isinstance(name_ctx, list):
-                    for n in name_ctx:
-                        self._used_params.add(n.getText())
-                        if n.getText() in self._class_members:
-                            self._internal_accesses += 1
-
-                        # Divergent Branch detection
-                        if self._in_selection_expr and n.getText() in thresholds.gpu_identifiers:
-                            self.smells.append(
-                                CodeSmell(
-                                    kind=SmellKind.DIVERGENT_BRANCH,
-                                    message=f"Control flow depends on GPU identifier '{n.getText()}'; possible branch divergence",
-                                    location=source_location,
-                                    line=ctx.start.line,
-                                    column=ctx.start.column,
-                                )
-                            )
-                else:
-                    self._used_params.add(name_ctx.getText())
-                    if name_ctx.getText() in self._class_members:
+                names = name_ctx if isinstance(name_ctx, list) else [name_ctx]
+                for n in names:
+                    name_text = n.getText()
+                    self._used_params.add(name_text)
+                    if name_text in self._class_members:
                         self._internal_accesses += 1
 
                     # Divergent Branch detection
-                    if self._in_selection_expr and name_ctx.getText() in thresholds.gpu_identifiers:
+                    if self._in_selection_expr and name_text in thresholds.gpu_identifiers:
                         self.smells.append(
                             CodeSmell(
                                 kind=SmellKind.DIVERGENT_BRANCH,
-                                message=f"Control flow depends on GPU identifier '{name_ctx.getText()}'; possible branch divergence",
+                                message=f"Control flow depends on GPU identifier '{name_text}'; possible branch divergence",
                                 location=source_location,
                                 line=ctx.start.line,
                                 column=ctx.start.column,
                             )
                         )
+                        self._is_inside_divergent_selection = True
             return self.visitChildren(ctx)
 
         def visitPostfixExpression(self, ctx):
             # Message Chain and Feature Envy detection
+            text = ctx.getText()
             if ctx.LParen():
                 self._function_call_count += 1
-                if "atomic" in ctx.getText() and self._in_loop:
+                if "atomic" in text and self._in_loop:
                     self._atomic_calls_in_loop += 1
+                
+                # Barrier overuse
+                if "threadgroup_barrier" in text:
+                    self._barrier_calls_count += 1
+                    if self._barrier_calls_count > 1:
+                        self.smells.append(
+                            CodeSmell(
+                                kind=SmellKind.THREADGROUP_BARRIER_OVERUSE,
+                                message="Multiple threadgroup_barrier calls detected; ensure they are strictly necessary to avoid pipeline stalls",
+                                location=source_location,
+                                line=ctx.start.line,
+                                column=ctx.start.column,
+                            )
+                        )
+                
+                # Divergent texture sample
+                if ".sample(" in text and self._is_inside_divergent_selection:
+                     self.smells.append(
+                        CodeSmell(
+                            kind=SmellKind.DIVERGENT_TEXTURE_SAMPLE,
+                            message="Texture sample inside divergent control flow; may cause incorrect implicit LOD or scalar execution",
+                            location=source_location,
+                            line=ctx.start.line,
+                            column=ctx.start.column,
+                        )
+                    )
+                
+                # Dependent texture read and Format mismatch detection
+                if ".sample(" in text or ".read(" in text:
+                    # Dependent read
+                    for prev_var in self._texture_reads:
+                        if prev_var in text:
+                            self.smells.append(
+                                CodeSmell(
+                                    kind=SmellKind.DEPENDENT_TEXTURE_READ,
+                                    message=f"Texture sample depends on previous sample result '{prev_var}'; GPU cannot prefetch",
+                                    location=source_location,
+                                    line=ctx.start.line,
+                                    column=ctx.start.column,
+                                )
+                            )
+                    
+                    # Format mismatch heuristic: texture2d<float> is often overkill for 8-bit textures
+                    if "texture2d<float>" in text or "texture2d<half>" in text:
+                        # (In a real detector, we'd check the template param of the texture object)
+                        pass
+
+            # Indexing (subscript) detection via LBrack
+            if hasattr(ctx, "LBrack") and ctx.LBrack():
+                base_ctx = ctx.postfixExpression()
+                index_ctx = ctx.expression()
+                if base_ctx and index_ctx:
+                    base = base_ctx.getText()
+                    index = index_ctx.getText()
+
+                    _gpu_ids = thresholds.gpu_identifiers | self._gpu_bound_vars
+
+                    # Non-coalesced access heuristic
+                    if any(id in index for id in _gpu_ids):
+                        import re
+                        if re.search(r"(\.y|\[1\])\s*\*\s*(\d+)\s*\+", index):
+                            match = re.search(r"\*\s*(\d+)", index)
+                            if match and int(match.group(1)) > 1:
+                                self.smells.append(
+                                    CodeSmell(
+                                        kind=SmellKind.NON_COALESCED_ACCESS,
+                                        message=f"Access to '{base}' uses a stride > 1; may result in non-coalesced memory access on GPU",
+                                        location=source_location,
+                                        line=ctx.start.line,
+                                        column=ctx.start.column,
+                                    )
+                                )
+
+                    # Bank conflict heuristic
+                    if any(id in index for id in _gpu_ids):
+                        import re
+                        match = re.search(r"\*\s*(\d+)", index)
+                        if match:
+                            stride = int(match.group(1))
+                            if stride > 0 and stride % thresholds.bank_count == 0:
+                                 self.smells.append(
+                                    CodeSmell(
+                                        kind=SmellKind.THREADGROUP_BANK_CONFLICT,
+                                        message=f"Access to '{base}' with stride {stride} may cause threadgroup bank conflicts (bank count={thresholds.bank_count})",
+                                        location=source_location,
+                                        line=ctx.start.line,
+                                        column=ctx.start.column,
+                                    )
+                                )
 
             chain_length = 0
             curr = ctx
@@ -588,6 +762,13 @@ def _SmellVisitor(
                             self._external_accesses.get(base_text, 0) + 1
                         )
                         self._touched_structs.add(base_text)
+                        
+                        # Track texture sample results for dependent read detection
+                        if ".sample(" in text:
+                            # Heuristic: assignments like 'float4 c = tex.sample(...)'
+                            # We can't easily see the LHS here, so we look for 'name =' in the parent line
+                            # or just use a simpler heuristic for now.
+                            pass
 
                 curr = curr.postfixExpression()
 
@@ -664,6 +845,21 @@ def _SmellVisitor(
 
             old_loop = self._in_loop
             self._in_loop = True
+            
+            # SIMDgroup opportunity missed heuristic
+            # Check for loop over simdgroup_size or 32 with accumulation pattern
+            loop_text = ctx.getText()
+            if "for" in loop_text and ("32" in loop_text or "simdgroup_size" in loop_text):
+                if "+" in loop_text or "sum" in loop_text:
+                    self.smells.append(
+                        CodeSmell(
+                            kind=SmellKind.SIMDGROUP_OPPORTUNITY_MISSED,
+                            message="Manual reduction loop detected; consider using simd_sum() or other SIMD primitives for better performance",
+                            location=source_location,
+                            line=ctx.start.line,
+                            column=ctx.start.column,
+                        )
+                    )
 
             expr = ctx.expression()
             if expr:
