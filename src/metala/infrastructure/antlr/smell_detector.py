@@ -24,6 +24,47 @@ class SmellThresholds:
     magic_number_ignored_values: set[str] = field(
         default_factory=lambda: {"0", "1", "0.0", "1.0", "-1", "-1.0"}
     )
+    shader_magic_number_permits: set[str] = field(
+        default_factory=lambda: {
+            # fractional steps common in shaders
+            "0.0",
+            "0.05",
+            "0.1",
+            "0.15",
+            "0.2",
+            "0.25",
+            "0.3",
+            "0.35",
+            "0.4",
+            "0.45",
+            "0.5",
+            "0.55",
+            "0.6",
+            "0.65",
+            "0.7",
+            "0.75",
+            "0.8",
+            "0.85",
+            "0.9",
+            "0.95",
+            "1.0",
+            # small integers common in shaders (kernel sizes, repetitions)
+            "2.0",
+            "3.0",
+            "4.0",
+            "5.0",
+            "8.0",
+            # pixel / colour
+            "255.0",
+            "255",
+            "128.0",
+            "128",
+            # tiny offsets common in shaders
+            "0.01",
+            "0.001",
+            "0.0001",
+        }
+    )
     message_chain_limit: int = 3
     primitive_obsession_limit: int = 4
     comment_density_limit: float = 0.5  # Comments / Code ratio
@@ -31,8 +72,12 @@ class SmellThresholds:
     resource_limit: int = 8  # Buffers/Textures in parameters
     gpu_identifiers: set[str] = field(
         default_factory=lambda: {
-            "gid", "tid", "thread_position_in_grid", "thread_position_in_threadgroup",
-            "thread_index_in_threadgroup", "simdgroup_index_in_threadgroup"
+            "gid",
+            "tid",
+            "thread_position_in_grid",
+            "thread_position_in_threadgroup",
+            "thread_index_in_threadgroup",
+            "simdgroup_index_in_threadgroup",
         }
     )
 
@@ -44,20 +89,20 @@ class AntlrMetalCodeSmellDetector(MetalCodeSmellDetector):
 
     def detect(self, source_unit: SourceUnit) -> SourceSmellReport:
         parse_result = parse_source_text(source_unit.content, self._generated)
-        
+
         # Calculate comment density for the whole file
         comment_lines = source_unit.content.count("//") + source_unit.content.count("/*")
         total_lines = source_unit.content.count("\n") + 1
         density = comment_lines / total_lines if total_lines > 0 else 0
-        
+
         visitor = _SmellVisitor(
             source_location=source_unit.location,
             thresholds=self._thresholds,
             visitor_base=self._generated.visitor_type,
-            file_density=density
+            file_density=density,
         )
         visitor.visit(parse_result.tree)
-        
+
         # Post-process for file-level smells if any
         if density > self._thresholds.comment_density_limit:
             visitor.smells.append(
@@ -69,7 +114,7 @@ class AntlrMetalCodeSmellDetector(MetalCodeSmellDetector):
                     column=0,
                 )
             )
-            
+
         return SourceSmellReport(
             source_location=source_unit.location,
             smells=tuple(visitor.smells),
@@ -77,10 +122,7 @@ class AntlrMetalCodeSmellDetector(MetalCodeSmellDetector):
 
 
 def _SmellVisitor(
-    source_location: str, 
-    thresholds: SmellThresholds, 
-    visitor_base: type,
-    file_density: float
+    source_location: str, thresholds: SmellThresholds, visitor_base: type, file_density: float
 ) -> Any:
     class MetalSmellVisitor(visitor_base):
         def __init__(self) -> None:
@@ -93,10 +135,10 @@ def _SmellVisitor(
             self._used_params: set[str] = set()
             self._local_vars_count = 0
             self._in_constant_decl = False
-            
+
             # Fowler specifics
             self._current_function_name: str | None = None
-            self._external_accesses: dict[str, int] = {} # target -> count
+            self._external_accesses: dict[str, int] = {}  # target -> count
             self._internal_accesses: int = 0
             self._parameter_signatures: list[tuple[str, ...]] = []
             self._current_class: str | None = None
@@ -105,12 +147,13 @@ def _SmellVisitor(
             self._function_call_count = 0
             self._touched_structs: set[str] = set()
             self._member_functions: list[str] = []
-            
+
             # GPU specifics
             self._resource_count = 0
             self._in_selection_expr = False
             self._in_loop = False
             self._atomic_calls_in_loop = 0
+            self._shader_function: bool = False
 
         # -- Class/Struct analysis ----------------------------------------
 
@@ -120,16 +163,20 @@ def _SmellVisitor(
             name = "anonymous"
             if name_ctx:
                 name = name_ctx[0].getText() if isinstance(name_ctx, list) else name_ctx.getText()
-            
+
             old_class = self._current_class
             old_members = self._class_members
             old_member_funcs = self._member_functions
             self._current_class = name
             self._class_members = set()
             self._member_functions = []
-            
+
             # Check for inheritance (Refused Bequest)
-            if hasattr(ctx, "typeSpecifier") and ctx.typeSpecifier() and not isinstance(ctx.typeSpecifier(), list):
+            if (
+                hasattr(ctx, "typeSpecifier")
+                and ctx.typeSpecifier()
+                and not isinstance(ctx.typeSpecifier(), list)
+            ):
                 # We have a base class
                 self.smells.append(
                     CodeSmell(
@@ -140,9 +187,9 @@ def _SmellVisitor(
                         column=ctx.start.column,
                     )
                 )
-            
+
             result = self.visitChildren(ctx)
-            
+
             # Primitive Obsession in Struct
             primitives = len(self._class_members)
             if primitives > thresholds.primitive_obsession_limit:
@@ -156,7 +203,7 @@ def _SmellVisitor(
                         context=f"struct {name}",
                     )
                 )
-            
+
             # Divergent Change / Large Class
             if len(self._member_functions) > 10:
                 self.smells.append(
@@ -223,6 +270,11 @@ def _SmellVisitor(
                 self._member_functions.append(name)
 
             self._current_function_name = name
+            qualifiers = ctx.functionQualifier()
+            shader_kinds = {
+                q.getText().lower() for q in (qualifiers if isinstance(qualifiers, list) else [])
+            }
+            self._shader_function = bool(shader_kinds & {"vertex", "fragment", "kernel", "compute"})
             start_line = ctx.start.line
             stop_line = ctx.stop.line
             line_count = stop_line - start_line + 1
@@ -248,11 +300,11 @@ def _SmellVisitor(
             self._current_params = set()
             self._used_params = set()
             self._resource_count = 0
-            
+
             if params:
                 param_decls = params.parameterDeclaration()
                 param_count = len(param_decls)
-                
+
                 # Data Clump detection
                 sig = tuple(p.getText() for p in param_decls)
                 for existing in self._parameter_signatures:
@@ -280,19 +332,19 @@ def _SmellVisitor(
                             context=f"function {name}",
                         )
                     )
-                
+
                 for p in param_decls:
                     p_name_ctx = p.name()
                     if p_name_ctx:
                         self._current_params.add(p_name_ctx.getText())
-                    
+
                     # Resource Overload check
                     text = p.getText()
                     if "texture" in text or "buffer" in text or "device" in text:
                         self._resource_count += 1
 
             if self._resource_count > thresholds.resource_limit:
-                 self.smells.append(
+                self.smells.append(
                     CodeSmell(
                         kind=SmellKind.RESOURCE_OVERLOAD,
                         message=f"Function '{name}' binds too many resources ({self._resource_count}); may impact performance",
@@ -312,7 +364,7 @@ def _SmellVisitor(
             old_calls = self._function_call_count
             old_touched = self._touched_structs
             old_atomic_calls = self._atomic_calls_in_loop
-            
+
             self._current_complexity = 1  # Base complexity
             self._current_nesting = 0
             self._local_vars_count = 0
@@ -339,7 +391,7 @@ def _SmellVisitor(
 
             # Middle Man check
             if self._function_call_count == 1 and line_count < 5:
-                 self.smells.append(
+                self.smells.append(
                     CodeSmell(
                         kind=SmellKind.MIDDLE_MAN,
                         message=f"Function '{name}' looks like a Middle Man (only delegates)",
@@ -348,7 +400,7 @@ def _SmellVisitor(
                         column=ctx.start.column,
                     )
                 )
-            
+
             # Shotgun Surgery heuristic
             if len(self._touched_structs) > 3:
                 self.smells.append(
@@ -386,7 +438,7 @@ def _SmellVisitor(
                         context=f"function {name}",
                     )
                 )
-            
+
             # Excessive Locals
             if self._local_vars_count > thresholds.excessive_locals:
                 self.smells.append(
@@ -399,7 +451,7 @@ def _SmellVisitor(
                         context=f"function {name}",
                     )
                 )
-            
+
             # Unused Parameters
             unused = self._current_params - self._used_params
             for p_name in sorted(unused):
@@ -427,6 +479,7 @@ def _SmellVisitor(
             self._resource_count = old_resource_count
             self._atomic_calls_in_loop = old_atomic_calls
             self._current_function_name = None
+            self._shader_function = False
             return None
 
         # -- Variable analysis --------------------------------------------
@@ -458,14 +511,14 @@ def _SmellVisitor(
                                     column=ctx.start.column,
                                 )
                             )
-            
+
             # Check if this is a constant declaration
             is_const = False
             for q in ctx.typeQualifier() or []:
                 if q.Const() or q.Constexpr():
                     is_const = True
                     break
-            
+
             old_in_constant = self._in_constant_decl
             self._in_constant_decl = is_const
             result = self.visitChildren(ctx)
@@ -481,7 +534,7 @@ def _SmellVisitor(
                         self._used_params.add(n.getText())
                         if n.getText() in self._class_members:
                             self._internal_accesses += 1
-                        
+
                         # Divergent Branch detection
                         if self._in_selection_expr and n.getText() in thresholds.gpu_identifiers:
                             self.smells.append(
@@ -497,7 +550,7 @@ def _SmellVisitor(
                     self._used_params.add(name_ctx.getText())
                     if name_ctx.getText() in self._class_members:
                         self._internal_accesses += 1
-                    
+
                     # Divergent Branch detection
                     if self._in_selection_expr and name_ctx.getText() in thresholds.gpu_identifiers:
                         self.smells.append(
@@ -520,18 +573,24 @@ def _SmellVisitor(
 
             chain_length = 0
             curr = ctx
-            while curr and hasattr(curr, "Dot") and (curr.Dot() or (hasattr(curr, "Arrow") and curr.Arrow())):
+            while (
+                curr
+                and hasattr(curr, "Dot")
+                and (curr.Dot() or (hasattr(curr, "Arrow") and curr.Arrow()))
+            ):
                 chain_length += 1
                 if chain_length == 1:
                     # Capture the base object for Feature Envy
                     base = curr.postfixExpression()
                     if base:
                         base_text = base.getText()
-                        self._external_accesses[base_text] = self._external_accesses.get(base_text, 0) + 1
+                        self._external_accesses[base_text] = (
+                            self._external_accesses.get(base_text, 0) + 1
+                        )
                         self._touched_structs.add(base_text)
-                
+
                 curr = curr.postfixExpression()
-            
+
             if chain_length > thresholds.message_chain_limit:
                 self.smells.append(
                     CodeSmell(
@@ -547,16 +606,20 @@ def _SmellVisitor(
         def visitLiteral(self, ctx):
             if not self._in_constant_decl:
                 val = ctx.getText()
-                if (ctx.IntegerLiteral() or ctx.FloatingLiteral()) and val not in thresholds.magic_number_ignored_values:
-                    self.smells.append(
-                        CodeSmell(
-                            kind=SmellKind.MAGIC_NUMBER,
-                            message=f"Magic number '{val}' detected",
-                            location=source_location,
-                            line=ctx.start.line,
-                            column=ctx.start.column,
+                if ctx.IntegerLiteral() or ctx.FloatingLiteral():
+                    ignored = thresholds.magic_number_ignored_values
+                    if self._shader_function:
+                        ignored = ignored | thresholds.shader_magic_number_permits
+                    if val not in ignored:
+                        self.smells.append(
+                            CodeSmell(
+                                kind=SmellKind.MAGIC_NUMBER,
+                                message=f"Magic number '{val}' detected",
+                                location=source_location,
+                                line=ctx.start.line,
+                                column=ctx.start.column,
+                            )
                         )
-                    )
             return self.visitChildren(ctx)
 
         # -- Control flow analysis (Complexity & Nesting) -----------------
@@ -573,10 +636,10 @@ def _SmellVisitor(
                         column=ctx.start.column,
                     )
                 )
-            
+
             self._current_nesting += 1
             self._check_nesting(ctx)
-            
+
             # Track if we are in the condition expression
             expr = ctx.expression()
             if expr:
@@ -584,7 +647,7 @@ def _SmellVisitor(
                 self._in_selection_expr = True
                 self.visit(expr)
                 self._in_selection_expr = old_in_sel
-            
+
             # Visit everything EXCEPT the expression we already visited
             for i in range(ctx.getChildCount()):
                 child = ctx.getChild(i)
@@ -598,10 +661,10 @@ def _SmellVisitor(
             self._current_complexity += 1
             self._current_nesting += 1
             self._check_nesting(ctx)
-            
+
             old_loop = self._in_loop
             self._in_loop = True
-            
+
             expr = ctx.expression()
             if expr:
                 if isinstance(expr, list):
