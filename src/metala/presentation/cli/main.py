@@ -17,9 +17,13 @@ from metala.application.control_flow import (
 )
 from metala.application.dto import ParseDirectoryCommand, ParseFileCommand, ParsingJobReportDTO
 from metala.application.smells import (
+    CodeSmellDTO,
     CodeSmellService,
+    SmellBundleDTO,
     SmellDirectoryCommand,
     SmellFileCommand,
+    SourceSmellReport,
+    SourceSmellReportDTO,
 )
 from metala.application.use_cases import ParsingJobService
 from metala.domain.errors import MetalaError
@@ -28,6 +32,7 @@ from metala.infrastructure.antlr.parser_adapter import AntlrMetalSyntaxParser
 from metala.infrastructure.antlr.smell_detector import AntlrMetalCodeSmellDetector
 from metala.infrastructure.filesystem.source_repository import FileSystemSourceRepository
 from metala.infrastructure.rendering.nassi_html_renderer import HtmlNassiDiagramRenderer
+from metala.infrastructure.rendering.smell_html_renderer import MetalaSmellHtmlRenderer
 from metala.infrastructure.system import (
     InMemoryParsingJobRepository,
     StructuredLoggingEventPublisher,
@@ -90,11 +95,48 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         elif args.command == "smells-file":
             report = _build_smell_service().smell_file(SmellFileCommand(path=args.path))
-            print(json.dumps(report.to_dict(), indent=2))
+            if args.out:
+                html = MetalaSmellHtmlRenderer().render_file(_to_domain_report(report))
+                output_path = _resolve_output_path(args.path, args.out, suffix=".smells.html")
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(html, encoding="utf-8")
+                payload = report.to_dict()
+                payload["output_path"] = str(output_path)
+                print(json.dumps(payload, indent=2))
+            else:
+                print(json.dumps(report.to_dict(), indent=2))
             return 0
         elif args.command == "smells-dir":
-            bundle = _build_smell_service().smell_directory(SmellDirectoryCommand(root_path=args.path))
-            print(json.dumps(bundle.to_dict(), indent=2))
+            bundle = _build_smell_service().smell_directory(
+                SmellDirectoryCommand(root_path=args.path)
+            )
+            if args.out:
+                output_dir = _resolve_output_directory(args.path, args.out)
+                written = _write_directory_smell_reports(bundle, output_dir)
+                index_path = output_dir / "index.html"
+                index_html = MetalaSmellHtmlRenderer().render_directory_bundle(bundle)
+                index_path.write_text(index_html, encoding="utf-8")
+                meta = bundle.to_dict()
+                meta["output_dir"] = str(output_dir)
+                meta["index_path"] = str(index_path)
+                meta["reports"] = (
+                    [
+                        {
+                            "source_location": r.source_location,
+                            "smell_count": r.smell_count,
+                            "output_path": str(w.output_path),
+                        }
+                        for r, w in zip(bundle.reports, written)
+                    ]
+                    if args.out
+                    else [
+                        {"source_location": r.source_location, "smell_count": r.smell_count}
+                        for r in bundle.reports
+                    ]
+                )
+                print(json.dumps(meta, indent=2))
+            else:
+                print(json.dumps(bundle.to_dict(), indent=2))
             return 0
         else:
             parser.error(f"unsupported command: {args.command}")
@@ -139,11 +181,19 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
     smells_file = subparsers.add_parser("smells-file", help="Find code smells in one Metal file.")
     smells_file.add_argument("path", help="Path to a .metal file.")
+    smells_file.add_argument(
+        "--out",
+        help="Output HTML path. Defaults to <input>.smells.html.",
+    )
 
     smells_dir = subparsers.add_parser(
         "smells-dir", help="Find code smells in all Metal files in a directory."
     )
     smells_dir.add_argument("path", help="Path to a directory.")
+    smells_dir.add_argument(
+        "--out",
+        help="Output directory for HTML reports. Defaults to <input>.smells/.",
+    )
 
     return parser
 
@@ -179,18 +229,16 @@ def _exit_code_for(report: ParsingJobReportDTO) -> int:
     return 0
 
 
-def _resolve_output_path(input_path: str, explicit_output_path: str | None) -> Path:
+def _resolve_output_path(input_path: str, explicit_output_path: str | None, suffix: str) -> Path:
     if explicit_output_path:
         return Path(explicit_output_path).expanduser().resolve()
-
     resolved_input = Path(input_path).expanduser().resolve()
-    return resolved_input.with_suffix(".nassi.html")
+    return resolved_input.with_suffix(suffix)
 
 
 def _resolve_output_directory(input_path: str, explicit_output_path: str | None) -> Path:
     if explicit_output_path:
         return Path(explicit_output_path).expanduser().resolve()
-
     resolved_input = Path(input_path).expanduser().resolve()
     return resolved_input.with_name(f"{resolved_input.name}.nassi")
 
@@ -452,6 +500,62 @@ def _render_directory_index(
   </body>
 </html>
 """
+
+
+def _to_domain_report(report: SourceSmellReportDTO) -> SourceSmellReport:
+    """Convert the application-layer DTO back to the domain model for rendering."""
+    from metala.domain.smells import CodeSmell, SmellKind as _Sk
+
+    def _smell(dto: CodeSmellDTO) -> CodeSmell:
+        return CodeSmell(
+            kind=_Sk(dto.kind),
+            message=dto.message,
+            location=report.source_location,
+            line=dto.line,
+            column=dto.column,
+            severity="warning",
+            context=dto.context,
+        )
+
+    return SourceSmellReport(
+        source_location=report.source_location,
+        smells=tuple(_smell(s) for s in report.smells),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _WrittenSmellReport:
+    source_location: str
+    smell_count: int
+    output_path: Path
+    relative_output_path: str
+
+
+def _write_directory_smell_reports(
+    bundle: SmellBundleDTO,
+    output_dir: Path,
+) -> tuple[_WrittenSmellReport, ...]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(bundle.root_path)
+    written: list[_WrittenSmellReport] = []
+    for r in bundle.reports:
+        source = Path(r.source_location)
+        rel = source.relative_to(root)
+        out = (output_dir / rel).with_suffix(".smells.html")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            MetalaSmellHtmlRenderer().render_file(_to_domain_report(r)),
+            encoding="utf-8",
+        )
+        written.append(
+            _WrittenSmellReport(
+                source_location=r.source_location,
+                smell_count=r.smell_count,
+                output_path=out,
+                relative_output_path=out.relative_to(output_dir).as_posix(),
+            )
+        )
+    return tuple(written)
 
 
 if __name__ == "__main__":

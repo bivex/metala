@@ -57,6 +57,12 @@ class NassiDiagramRenderer(ABC):
         raise NotImplementedError
 
 
+class SmellReportRenderer(ABC):
+    @abstractmethod
+    def render_file(self, report: SourceSmellReport) -> str:
+        raise NotImplementedError
+
+
 class DomainEventPublisher(ABC):
     @abstractmethod
     def publish(self, event: DomainEvent) -> None:
