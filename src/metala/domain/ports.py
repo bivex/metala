@@ -9,6 +9,7 @@ from typing import Sequence
 from metala.domain.control_flow import ControlFlowDiagram
 from metala.domain.events import DomainEvent
 from metala.domain.model import GrammarVersion, ParseOutcome, ParsingJob, SourceUnit
+from metala.domain.smells import SourceSmellReport
 
 
 class SourceRepository(ABC):
@@ -41,6 +42,12 @@ class MetalSyntaxParser(ABC):
 class MetalControlFlowExtractor(ABC):
     @abstractmethod
     def extract(self, source_unit: SourceUnit) -> ControlFlowDiagram:
+        raise NotImplementedError
+
+
+class MetalCodeSmellDetector(ABC):
+    @abstractmethod
+    def detect(self, source_unit: SourceUnit) -> SourceSmellReport:
         raise NotImplementedError
 
 

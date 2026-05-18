@@ -16,10 +16,16 @@ from metala.application.control_flow import (
     NassiDiagramService,
 )
 from metala.application.dto import ParseDirectoryCommand, ParseFileCommand, ParsingJobReportDTO
+from metala.application.smells import (
+    CodeSmellService,
+    SmellDirectoryCommand,
+    SmellFileCommand,
+)
 from metala.application.use_cases import ParsingJobService
 from metala.domain.errors import MetalaError
 from metala.infrastructure.antlr.control_flow_extractor import AntlrMetalControlFlowExtractor
 from metala.infrastructure.antlr.parser_adapter import AntlrMetalSyntaxParser
+from metala.infrastructure.antlr.smell_detector import AntlrMetalCodeSmellDetector
 from metala.infrastructure.filesystem.source_repository import FileSystemSourceRepository
 from metala.infrastructure.rendering.nassi_html_renderer import HtmlNassiDiagramRenderer
 from metala.infrastructure.system import (
@@ -82,6 +88,14 @@ def main(argv: list[str] | None = None) -> int:
             ]
             print(json.dumps(payload, indent=2))
             return 0
+        elif args.command == "smells-file":
+            report = _build_smell_service().smell_file(SmellFileCommand(path=args.path))
+            print(json.dumps(report.to_dict(), indent=2))
+            return 0
+        elif args.command == "smells-dir":
+            bundle = _build_smell_service().smell_directory(SmellDirectoryCommand(root_path=args.path))
+            print(json.dumps(bundle.to_dict(), indent=2))
+            return 0
         else:
             parser.error(f"unsupported command: {args.command}")
     except MetalaError as error:
@@ -122,6 +136,15 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         "--out",
         help="Output directory. Defaults to <input>.nassi/.",
     )
+
+    smells_file = subparsers.add_parser("smells-file", help="Find code smells in one Metal file.")
+    smells_file.add_argument("path", help="Path to a .metal file.")
+
+    smells_dir = subparsers.add_parser(
+        "smells-dir", help="Find code smells in all Metal files in a directory."
+    )
+    smells_dir.add_argument("path", help="Path to a directory.")
+
     return parser
 
 
@@ -140,6 +163,13 @@ def _build_nassi_service() -> NassiDiagramService:
         source_repository=FileSystemSourceRepository(),
         extractor=AntlrMetalControlFlowExtractor(),
         renderer=HtmlNassiDiagramRenderer(),
+    )
+
+
+def _build_smell_service() -> CodeSmellService:
+    return CodeSmellService(
+        source_repository=FileSystemSourceRepository(),
+        detector=AntlrMetalCodeSmellDetector(),
     )
 
 
