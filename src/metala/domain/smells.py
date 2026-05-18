@@ -27,6 +27,9 @@ class SmellKind(StrEnum):
     TEMPORARY_FIELD = "temporary_field"
     REFUSED_BEQUEST = "refused_bequest"
     COMMENT_DENSITY = "comment_density"
+    DIVERGENT_BRANCH = "divergent_branch"
+    RESOURCE_OVERLOAD = "resource_overload"
+    ATOMIC_CONTENTION = "atomic_contention"
 
 
 @dataclass(frozen=True, slots=True)

@@ -28,6 +28,13 @@ class SmellThresholds:
     primitive_obsession_limit: int = 4
     comment_density_limit: float = 0.5  # Comments / Code ratio
     feature_envy_limit: int = 3  # External accesses vs internal
+    resource_limit: int = 8  # Buffers/Textures in parameters
+    gpu_identifiers: set[str] = field(
+        default_factory=lambda: {
+            "gid", "tid", "thread_position_in_grid", "thread_position_in_threadgroup",
+            "thread_index_in_threadgroup", "simdgroup_index_in_threadgroup"
+        }
+    )
 
 
 class AntlrMetalCodeSmellDetector(MetalCodeSmellDetector):
@@ -98,6 +105,12 @@ def _SmellVisitor(
             self._function_call_count = 0
             self._touched_structs: set[str] = set()
             self._member_functions: list[str] = []
+            
+            # GPU specifics
+            self._resource_count = 0
+            self._in_selection_expr = False
+            self._in_loop = False
+            self._atomic_calls_in_loop = 0
 
         # -- Class/Struct analysis ----------------------------------------
 
@@ -231,8 +244,10 @@ def _SmellVisitor(
             params = ctx.parameterList()
             old_params = self._current_params
             old_used = self._used_params
+            old_resource_count = self._resource_count
             self._current_params = set()
             self._used_params = set()
+            self._resource_count = 0
             
             if params:
                 param_decls = params.parameterDeclaration()
@@ -270,6 +285,22 @@ def _SmellVisitor(
                     p_name_ctx = p.name()
                     if p_name_ctx:
                         self._current_params.add(p_name_ctx.getText())
+                    
+                    # Resource Overload check
+                    text = p.getText()
+                    if "texture" in text or "buffer" in text or "device" in text:
+                        self._resource_count += 1
+
+            if self._resource_count > thresholds.resource_limit:
+                 self.smells.append(
+                    CodeSmell(
+                        kind=SmellKind.RESOURCE_OVERLOAD,
+                        message=f"Function '{name}' binds too many resources ({self._resource_count}); may impact performance",
+                        location=source_location,
+                        line=start_line,
+                        column=ctx.start.column,
+                    )
+                )
 
             # Reset complexity, nesting, and locals for function body
             old_complexity = self._current_complexity
@@ -280,6 +311,7 @@ def _SmellVisitor(
             old_internal = self._internal_accesses
             old_calls = self._function_call_count
             old_touched = self._touched_structs
+            old_atomic_calls = self._atomic_calls_in_loop
             
             self._current_complexity = 1  # Base complexity
             self._current_nesting = 0
@@ -289,8 +321,21 @@ def _SmellVisitor(
             self._internal_accesses = 0
             self._function_call_count = 0
             self._touched_structs = set()
+            self._atomic_calls_in_loop = 0
 
             self.visitChildren(ctx)
+
+            # Atomic Contention in Loop
+            if self._atomic_calls_in_loop > 2:
+                self.smells.append(
+                    CodeSmell(
+                        kind=SmellKind.ATOMIC_CONTENTION,
+                        message=f"Function '{name}' has multiple atomic operations in a loop; high contention risk",
+                        location=source_location,
+                        line=start_line,
+                        column=ctx.start.column,
+                    )
+                )
 
             # Middle Man check
             if self._function_call_count == 1 and line_count < 5:
@@ -379,6 +424,8 @@ def _SmellVisitor(
             self._internal_accesses = old_internal
             self._function_call_count = old_calls
             self._touched_structs = old_touched
+            self._resource_count = old_resource_count
+            self._atomic_calls_in_loop = old_atomic_calls
             self._current_function_name = None
             return None
 
@@ -434,16 +481,42 @@ def _SmellVisitor(
                         self._used_params.add(n.getText())
                         if n.getText() in self._class_members:
                             self._internal_accesses += 1
+                        
+                        # Divergent Branch detection
+                        if self._in_selection_expr and n.getText() in thresholds.gpu_identifiers:
+                            self.smells.append(
+                                CodeSmell(
+                                    kind=SmellKind.DIVERGENT_BRANCH,
+                                    message=f"Control flow depends on GPU identifier '{n.getText()}'; possible branch divergence",
+                                    location=source_location,
+                                    line=ctx.start.line,
+                                    column=ctx.start.column,
+                                )
+                            )
                 else:
                     self._used_params.add(name_ctx.getText())
                     if name_ctx.getText() in self._class_members:
                         self._internal_accesses += 1
+                    
+                    # Divergent Branch detection
+                    if self._in_selection_expr and name_ctx.getText() in thresholds.gpu_identifiers:
+                        self.smells.append(
+                            CodeSmell(
+                                kind=SmellKind.DIVERGENT_BRANCH,
+                                message=f"Control flow depends on GPU identifier '{name_ctx.getText()}'; possible branch divergence",
+                                location=source_location,
+                                line=ctx.start.line,
+                                column=ctx.start.column,
+                            )
+                        )
             return self.visitChildren(ctx)
 
         def visitPostfixExpression(self, ctx):
             # Message Chain and Feature Envy detection
             if ctx.LParen():
                 self._function_call_count += 1
+                if "atomic" in ctx.getText() and self._in_loop:
+                    self._atomic_calls_in_loop += 1
 
             chain_length = 0
             curr = ctx
@@ -503,17 +576,55 @@ def _SmellVisitor(
             
             self._current_nesting += 1
             self._check_nesting(ctx)
-            result = self.visitChildren(ctx)
+            
+            # Track if we are in the condition expression
+            expr = ctx.expression()
+            if expr:
+                old_in_sel = self._in_selection_expr
+                self._in_selection_expr = True
+                self.visit(expr)
+                self._in_selection_expr = old_in_sel
+            
+            # Visit everything EXCEPT the expression we already visited
+            for i in range(ctx.getChildCount()):
+                child = ctx.getChild(i)
+                if child != expr:
+                    self.visit(child)
+
             self._current_nesting -= 1
-            return result
+            return None
 
         def visitIterationStatement(self, ctx):
             self._current_complexity += 1
             self._current_nesting += 1
             self._check_nesting(ctx)
-            result = self.visitChildren(ctx)
+            
+            old_loop = self._in_loop
+            self._in_loop = True
+            
+            expr = ctx.expression()
+            if expr:
+                if isinstance(expr, list):
+                    for e in expr:
+                        old_in_sel = self._in_selection_expr
+                        self._in_selection_expr = True
+                        self.visit(e)
+                        self._in_selection_expr = old_in_sel
+                else:
+                    old_in_sel = self._in_selection_expr
+                    self._in_selection_expr = True
+                    self.visit(expr)
+                    self._in_selection_expr = old_in_sel
+
+            # Visit everything EXCEPT expressions
+            for i in range(ctx.getChildCount()):
+                child = ctx.getChild(i)
+                if child != expr and not (isinstance(expr, list) and child in expr):
+                    self.visit(child)
+
+            self._in_loop = old_loop
             self._current_nesting -= 1
-            return result
+            return None
 
         def visitCaseGroup(self, ctx):
             self._current_complexity += 1
