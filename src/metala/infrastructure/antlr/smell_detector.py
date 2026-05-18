@@ -384,13 +384,22 @@ def _SmellVisitor(
 
         # -- Variable analysis --------------------------------------------
 
+        def visitStructMemberDeclaration(self, ctx):
+            if self._current_class and not self._in_function:
+                # Add to members for Primitive Obsession check
+                m_list = ctx.memberDeclaratorList()
+                if m_list:
+                    for m in m_list.memberDeclarator():
+                        self._class_members.add(m.name().getText())
+            return self.visitChildren(ctx)
+
         def visitVariableDeclaration(self, ctx):
             if self._in_function:
                 init_list = ctx.initDeclaratorList()
                 if init_list:
                     decls = init_list.initDeclarator()
                     self._local_vars_count += len(decls)
-                    # Temporary Field heuristic: fields only assigned in one function
+                    # Temporary Field heuristic
                     if self._current_class:
                         for d in decls:
                             self.smells.append(
@@ -403,12 +412,6 @@ def _SmellVisitor(
                                 )
                             )
             
-            if self._current_class and not self._in_function:
-                init_list = ctx.initDeclaratorList()
-                if init_list:
-                    for d in init_list.initDeclarator():
-                        self._class_members.add(d.declarator().name().getText())
-
             # Check if this is a constant declaration
             is_const = False
             for q in ctx.typeQualifier() or []:
