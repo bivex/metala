@@ -39,6 +39,13 @@ Today the system supports:
   * dark Tokyo Night-inspired theme with JetBrains Mono font
   * proper text wrapping and responsive layout
 
+* **Code smell detection**
+  * static analysis of one Metal file or entire directories
+  * 34 smell kinds across two categories: Fowler classics and GPU-specific patterns
+  * markdown (default) or JSON output to stdout
+  * self-contained dark-themed HTML reports via `--out`
+  * configurable thresholds (threadgroup limits, GPU identifier names, etc.)
+
 * **Architecture**
   * keeping parser infrastructure behind ports so the application layer stays independent from ANTLR, filesystem, and CLI details
 
@@ -123,6 +130,65 @@ uv run metala nassi-file path/to/Algorithms.metal --out output/algorithms.nassi.
 
 ```bash
 uv run metala nassi-dir path/to/project --out output/nassi-bundle
+```
+
+7. Detect code smells in a single Metal file:
+
+```bash
+uv run metala smells-file path/to/File.metal
+```
+
+Output formats:
+
+```bash
+# JSON for tooling integration
+uv run metala smells-file path/to/File.metal --format json
+
+# HTML report (dark theme, self-contained)
+uv run metala smells-file path/to/File.metal --out report.smells.html
+```
+
+8. Detect code smells across an entire project:
+
+```bash
+# Markdown summary (default)
+uv run metala smells-dir path/to/project
+
+# JSON with per-file breakdowns
+uv run metala smells-dir path/to/project --format json
+
+# HTML bundle with index page
+uv run metala smells-dir path/to/project --out output/smell-reports
+```
+
+## Detected Smell Kinds
+
+### Fowler Classics (20)
+
+`long_function` `long_parameter_list` `large_class` `deep_nesting` `complex_flow` `magic_number` `unused_parameter` `excessive_locals` `switch_statement` `message_chain` `data_clump` `feature_envy` `primitive_obsession` `middle_man` `speculative_generality` `divergent_change` `shotgun_surgery` `temporary_field` `refused_bequest` `comment_density`
+
+### GPU-Specific (14)
+
+| Category | Smells |
+|----------|--------|
+| Memory | `threadgroup_bank_conflict` `non_coalesced_access` `excessive_threadgroup_allocation` `dependent_texture_read` `threadgroup_barrier_overuse` |
+| Precision | `half_precision_neglect` `texture_format_mismatch` |
+| Synchronization | `simdgroup_opportunity_missed` |
+| Control Flow | `divergent_branch` `divergent_texture_sample` `vertex_output_bloat` |
+| General | `resource_overload` `atomic_contention` |
+
+### Example Output
+
+```
+# Code Smell Report
+
+**File:** `SDF.metal`
+**Status:** Low — 2 smells detected
+
+| # | | Smell | Line | Message |
+|--:|:-:|-------|-----:|:--------|
+| 1 | W | Middle Man | 12 | Function 'circleSDF' looks like a Middle Man (only delegates) |
+| 2 | W | Middle Man | 18 | Function 'sphereSDF' looks like a Middle Man (only delegates) |
 ```
 
 ## Constraints and honesty
