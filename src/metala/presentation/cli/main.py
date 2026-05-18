@@ -33,6 +33,10 @@ from metala.infrastructure.antlr.smell_detector import AntlrMetalCodeSmellDetect
 from metala.infrastructure.filesystem.source_repository import FileSystemSourceRepository
 from metala.infrastructure.rendering.nassi_html_renderer import HtmlNassiDiagramRenderer
 from metala.infrastructure.rendering.smell_html_renderer import MetalaSmellHtmlRenderer
+from metala.infrastructure.rendering.smell_markdown_formatter import (
+    format_directory_bundle,
+    format_file,
+)
 from metala.infrastructure.system import (
     InMemoryParsingJobRepository,
     StructuredLoggingEventPublisher,
@@ -58,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
             document = _build_nassi_service().build_file_diagram(
                 BuildNassiDiagramCommand(path=args.path)
             )
-            output_path = _resolve_output_path(args.path, args.out)
+            output_path = _resolve_output_path(args.path, args.out, ".nassi.html")
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(document.html, encoding="utf-8")
 
@@ -95,16 +99,45 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         elif args.command == "smells-file":
             report = _build_smell_service().smell_file(SmellFileCommand(path=args.path))
+            meta = report.to_dict()
             if args.out:
                 html = MetalaSmellHtmlRenderer().render_file(_to_domain_report(report))
-                output_path = _resolve_output_path(args.path, args.out, suffix=".smells.html")
+                output_path = _resolve_output_path(args.path, args.out, ".smells.html")
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_text(html, encoding="utf-8")
-                payload = report.to_dict()
-                payload["output_path"] = str(output_path)
-                print(json.dumps(payload, indent=2))
+                meta["output_path"] = str(output_path)
+            use_format = getattr(args, "format", "md")
+            if use_format == "json":
+                print(json.dumps(meta, indent=2))
             else:
-                print(json.dumps(report.to_dict(), indent=2))
+                print(format_file(_to_domain_report(report)), end="")
+            return 0
+        elif args.command == "smells-dir":
+            bundle = _build_smell_service().smell_directory(
+                SmellDirectoryCommand(root_path=args.path)
+            )
+            meta = bundle.to_dict()
+            if args.out:
+                output_dir = _resolve_output_directory(args.path, args.out)
+                written = _write_directory_smell_reports(bundle, output_dir)
+                index_path = output_dir / "index.html"
+                index_html = MetalaSmellHtmlRenderer().render_directory_bundle(bundle)
+                index_path.write_text(index_html, encoding="utf-8")
+                meta["output_dir"] = str(output_dir)
+                meta["index_path"] = str(index_path)
+                meta["reports"] = [
+                    {
+                        "source_location": r.source_location,
+                        "smell_count": r.smell_count,
+                        "output_path": str(w.output_path),
+                    }
+                    for r, w in zip(bundle.reports, written)
+                ]
+            use_format = getattr(args, "format", "md")
+            if use_format == "json":
+                print(json.dumps(meta, indent=2))
+            else:
+                print(format_directory_bundle(bundle), end="")
             return 0
         elif args.command == "smells-dir":
             bundle = _build_smell_service().smell_directory(
@@ -116,36 +149,29 @@ def main(argv: list[str] | None = None) -> int:
                 index_path = output_dir / "index.html"
                 index_html = MetalaSmellHtmlRenderer().render_directory_bundle(bundle)
                 index_path.write_text(index_html, encoding="utf-8")
-                meta = bundle.to_dict()
+            meta = bundle.to_dict()
+            if args.out:
                 meta["output_dir"] = str(output_dir)
                 meta["index_path"] = str(index_path)
-                meta["reports"] = (
-                    [
-                        {
-                            "source_location": r.source_location,
-                            "smell_count": r.smell_count,
-                            "output_path": str(w.output_path),
-                        }
-                        for r, w in zip(bundle.reports, written)
-                    ]
-                    if args.out
-                    else [
-                        {"source_location": r.source_location, "smell_count": r.smell_count}
-                        for r in bundle.reports
-                    ]
-                )
+                meta["reports"] = [
+                    {
+                        "source_location": r.source_location,
+                        "smell_count": r.smell_count,
+                        "output_path": str(w.output_path),
+                    }
+                    for r, w in zip(bundle.reports, written)
+                ]
+            use_format = getattr(args, "format", "md")
+            if use_format == "json":
                 print(json.dumps(meta, indent=2))
             else:
-                print(json.dumps(bundle.to_dict(), indent=2))
+                print(format_directory_bundle(bundle), end="")
             return 0
         else:
             parser.error(f"unsupported command: {args.command}")
     except MetalaError as error:
         print(json.dumps({"error": str(error)}, indent=2), file=sys.stderr)
         return 2
-
-    print(json.dumps(report.to_dict(), indent=2))
-    return _exit_code_for(report)
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
@@ -183,7 +209,13 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     smells_file.add_argument("path", help="Path to a .metal file.")
     smells_file.add_argument(
         "--out",
-        help="Output HTML path. Defaults to <input>.smells.html.",
+        help="Write an HTML report to this path.",
+    )
+    smells_file.add_argument(
+        "--format",
+        default="md",
+        choices=["md", "json"],
+        help="Output format for stdout (default: md).",
     )
 
     smells_dir = subparsers.add_parser(
@@ -192,7 +224,13 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     smells_dir.add_argument("path", help="Path to a directory.")
     smells_dir.add_argument(
         "--out",
-        help="Output directory for HTML reports. Defaults to <input>.smells/.",
+        help="Write HTML reports to this directory.",
+    )
+    smells_dir.add_argument(
+        "--format",
+        default="md",
+        choices=["md", "json"],
+        help="Output format for stdout (default: md).",
     )
 
     return parser
