@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from html import escape
+from pathlib import Path
 
 from metala.domain.ports import SmellReportRenderer
-from metala.domain.smells import SourceSmellReport
+from metala.domain.smells import SmellBundle, SourceSmellReport
 from metala.domain.smells import SmellKind
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2, "note": 3}
@@ -277,10 +278,17 @@ class MetalaSmellHtmlRenderer(SmellReportRenderer):
             "</div></body></html>"
         )
 
-    def render_directory_bundle(self, bundle) -> str:
+    def render_bundle(self, bundle: SmellBundle) -> str:
         rows = ""
+        root_path = Path(bundle.root_path)
         for r in bundle.reports:
-            href = escape(r.source_location) + ".smells.html"
+            source_path = Path(r.source_location)
+            try:
+                rel_path = source_path.relative_to(root_path)
+            except ValueError:
+                rel_path = source_path
+            
+            href = escape(str(rel_path)) + ".smells.html"
             cnt = r.smell_count
             cnt_style = (
                 "display:inline-flex;align-items:center;justify-content:center;"
@@ -299,7 +307,7 @@ class MetalaSmellHtmlRenderer(SmellReportRenderer):
                 '<td><a href="'
                 + href
                 + '" class="file-link">'
-                + escape(r.source_location)
+                + escape(str(rel_path))
                 + "</a></td>"
                 '<td style="text-align:center"><span style="'
                 + cnt_style

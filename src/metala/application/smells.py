@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from metala.domain.ports import MetalCodeSmellDetector, SourceRepository
-from metala.domain.smells import SourceSmellReport
+from metala.domain.ports import MetalCodeSmellDetector, SourceRepository, SmellReportRenderer
+from metala.domain.smells import SmellBundle, SourceSmellReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +42,7 @@ class SourceSmellReportDTO:
     source_location: str
     smells: tuple[CodeSmellDTO, ...]
     smell_count: int
+    html: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -56,6 +57,7 @@ class SmellBundleDTO:
     root_path: str
     reports: tuple[SourceSmellReportDTO, ...]
     total_smell_count: int
+    index_html: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -69,22 +71,41 @@ class SmellBundleDTO:
 class CodeSmellService:
     source_repository: SourceRepository
     detector: MetalCodeSmellDetector
+    renderer: SmellReportRenderer | None = None
 
     def smell_file(self, command: SmellFileCommand) -> SourceSmellReportDTO:
         source_unit = self.source_repository.load_file(command.path)
         report = self.detector.detect(source_unit)
-        return self._map_report(report)
+        html = self.renderer.render_file(report) if self.renderer else None
+        return self._map_report(report, html)
 
     def smell_directory(self, command: SmellDirectoryCommand) -> SmellBundleDTO:
         source_units = tuple(self.source_repository.list_metal_sources(command.root_path))
-        reports = tuple(self._map_report(self.detector.detect(source_unit)) for source_unit in source_units)
-        return SmellBundleDTO(
+        domain_reports = tuple(self.detector.detect(source_unit) for source_unit in source_units)
+        
+        reports_dto = tuple(
+            self._map_report(
+                report, 
+                self.renderer.render_file(report) if self.renderer else None
+            ) 
+            for report in domain_reports
+        )
+        
+        bundle = SmellBundle(
             root_path=str(Path(command.root_path).expanduser().resolve()),
-            reports=reports,
-            total_smell_count=sum(report.smell_count for report in reports),
+            reports=domain_reports,
+        )
+        
+        index_html = self.renderer.render_bundle(bundle) if self.renderer else None
+        
+        return SmellBundleDTO(
+            root_path=bundle.root_path,
+            reports=reports_dto,
+            total_smell_count=bundle.total_smell_count,
+            index_html=index_html,
         )
 
-    def _map_report(self, report: SourceSmellReport) -> SourceSmellReportDTO:
+    def _map_report(self, report: SourceSmellReport, html: str | None = None) -> SourceSmellReportDTO:
         smells = tuple(
             CodeSmellDTO(
                 kind=smell.kind.value,
@@ -99,4 +120,5 @@ class CodeSmellService:
             source_location=report.source_location,
             smells=smells,
             smell_count=len(smells),
+            html=html,
         )

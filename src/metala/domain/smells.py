@@ -51,3 +51,13 @@ class SourceSmellReport:
     @property
     def smell_count(self) -> int:
         return len(self.smells)
+
+
+@dataclass(frozen=True, slots=True)
+class SmellBundle:
+    root_path: str
+    reports: tuple[SourceSmellReport, ...]
+
+    @property
+    def total_smell_count(self) -> int:
+        return sum(report.smell_count for report in self.reports)

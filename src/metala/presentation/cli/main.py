@@ -101,11 +101,12 @@ def main(argv: list[str] | None = None) -> int:
             report = _build_smell_service().smell_file(SmellFileCommand(path=args.path))
             meta = report.to_dict()
             if args.out:
-                html = MetalaSmellHtmlRenderer().render_file(_to_domain_report(report))
                 output_path = _resolve_output_path(args.path, args.out, ".smells.html")
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text(html, encoding="utf-8")
+                if report.html:
+                    output_path.write_text(report.html, encoding="utf-8")
                 meta["output_path"] = str(output_path)
+            
             use_format = getattr(args, "format", "md")
             if use_format == "json":
                 print(json.dumps(meta, indent=2))
@@ -121,8 +122,9 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir = _resolve_output_directory(args.path, args.out)
                 written = _write_directory_smell_reports(bundle, output_dir)
                 index_path = output_dir / "index.html"
-                index_html = MetalaSmellHtmlRenderer().render_directory_bundle(bundle)
-                index_path.write_text(index_html, encoding="utf-8")
+                if bundle.index_html:
+                    index_path.write_text(bundle.index_html, encoding="utf-8")
+                
                 meta["output_dir"] = str(output_dir)
                 meta["index_path"] = str(index_path)
                 meta["reports"] = [
@@ -133,34 +135,7 @@ def main(argv: list[str] | None = None) -> int:
                     }
                     for r, w in zip(bundle.reports, written)
                 ]
-            use_format = getattr(args, "format", "md")
-            if use_format == "json":
-                print(json.dumps(meta, indent=2))
-            else:
-                print(format_directory_bundle(bundle), end="")
-            return 0
-        elif args.command == "smells-dir":
-            bundle = _build_smell_service().smell_directory(
-                SmellDirectoryCommand(root_path=args.path)
-            )
-            if args.out:
-                output_dir = _resolve_output_directory(args.path, args.out)
-                written = _write_directory_smell_reports(bundle, output_dir)
-                index_path = output_dir / "index.html"
-                index_html = MetalaSmellHtmlRenderer().render_directory_bundle(bundle)
-                index_path.write_text(index_html, encoding="utf-8")
-            meta = bundle.to_dict()
-            if args.out:
-                meta["output_dir"] = str(output_dir)
-                meta["index_path"] = str(index_path)
-                meta["reports"] = [
-                    {
-                        "source_location": r.source_location,
-                        "smell_count": r.smell_count,
-                        "output_path": str(w.output_path),
-                    }
-                    for r, w in zip(bundle.reports, written)
-                ]
+            
             use_format = getattr(args, "format", "md")
             if use_format == "json":
                 print(json.dumps(meta, indent=2))
@@ -258,6 +233,7 @@ def _build_smell_service() -> CodeSmellService:
     return CodeSmellService(
         source_repository=FileSystemSourceRepository(),
         detector=AntlrMetalCodeSmellDetector(),
+        renderer=MetalaSmellHtmlRenderer(),
     )
 
 
@@ -581,10 +557,8 @@ def _write_directory_smell_reports(
         rel = source.relative_to(root)
         out = (output_dir / rel).with_suffix(".smells.html")
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(
-            MetalaSmellHtmlRenderer().render_file(_to_domain_report(r)),
-            encoding="utf-8",
-        )
+        if r.html:
+            out.write_text(r.html, encoding="utf-8")
         written.append(
             _WrittenSmellReport(
                 source_location=r.source_location,

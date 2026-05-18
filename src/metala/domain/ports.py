@@ -9,7 +9,7 @@ from typing import Sequence
 from metala.domain.control_flow import ControlFlowDiagram
 from metala.domain.events import DomainEvent
 from metala.domain.model import GrammarVersion, ParseOutcome, ParsingJob, SourceUnit
-from metala.domain.smells import SourceSmellReport
+from metala.domain.smells import SmellBundle, SourceSmellReport
 
 
 class SourceRepository(ABC):
@@ -60,6 +60,10 @@ class NassiDiagramRenderer(ABC):
 class SmellReportRenderer(ABC):
     @abstractmethod
     def render_file(self, report: SourceSmellReport) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def render_bundle(self, bundle: SmellBundle) -> str:
         raise NotImplementedError
 
 
