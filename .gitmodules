@@ -1,0 +1,3 @@
+[submodule "metala_grammar"]
+	path = metala_grammar
+	url = https://github.com/bivex/metala_grammar

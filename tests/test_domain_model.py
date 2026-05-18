@@ -2,8 +2,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from swifta.domain.errors import EmptyParsingJobError
-from swifta.domain.model import (
+from metala.domain.errors import EmptyParsingJobError
+from metala.domain.model import (
     GrammarVersion,
     ParseOutcome,
     ParseStatistics,
@@ -20,9 +20,9 @@ def test_parsing_job_requires_at_least_one_source_unit() -> None:
 
 def test_parsing_job_tracks_outcomes() -> None:
     source_unit = SourceUnit(
-        identifier=SourceUnitId("/tmp/example.swift"),
-        location="/tmp/example.swift",
-        content="struct Example {}",
+        identifier=SourceUnitId("/tmp/example.metal"),
+        location="/tmp/example.metal",
+        content="struct Example {};",
     )
     job = ParsingJob(
         job_id="job-1",
@@ -48,4 +48,3 @@ def test_parsing_job_tracks_outcomes() -> None:
 
     assert job.succeeded_count == 1
     assert job.technical_failure_count == 0
-

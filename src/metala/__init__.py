@@ -1,0 +1,2 @@
+"""Metala package."""
+
