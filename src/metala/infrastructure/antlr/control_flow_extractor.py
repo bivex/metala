@@ -81,14 +81,28 @@ _MAX_EXPANDED_BODY_CHARS = 1800
 _MAX_EXPANDED_BODY_LINES = 36
 _SUMMARY_LABEL_LIMIT = 96
 
-_FUNCTION_QUALIFIER_TOKENS = frozenset({
-    "Vertex", "Fragment", "Kernel", "Tile", "Visible",
-    "Stitchable", "Intersection", "Object_qualifier", "Mesh",
-})
+_FUNCTION_QUALIFIER_TOKENS = frozenset(
+    {
+        "Vertex",
+        "Fragment",
+        "Kernel",
+        "Tile",
+        "Visible",
+        "Stitchable",
+        "Intersection",
+        "Object_qualifier",
+        "Mesh",
+    }
+)
 
-_CONTAINER_KEYWORD_TOKENS = frozenset({
-    "Struct", "Class", "Enum", "Namespace",
-})
+_CONTAINER_KEYWORD_TOKENS = frozenset(
+    {
+        "Struct",
+        "Class",
+        "Enum",
+        "Namespace",
+    }
+)
 
 
 class AntlrMetalControlFlowExtractor(MetalControlFlowExtractor):
@@ -100,8 +114,7 @@ class AntlrMetalControlFlowExtractor(MetalControlFlowExtractor):
         try:
             function_slices = _scan_function_slices(source_unit.content, self._generated)
             functions = tuple(
-                self._extract_function_slice(function_slice)
-                for function_slice in function_slices
+                self._extract_function_slice(function_slice) for function_slice in function_slices
             )
             return ControlFlowDiagram(
                 source_location=source_unit.location,
@@ -155,6 +168,7 @@ class AntlrMetalControlFlowExtractor(MetalControlFlowExtractor):
 # ---------------------------------------------------------------------------
 # Lightweight token-based function slicing
 # ---------------------------------------------------------------------------
+
 
 def _scan_function_slices(
     source_text: str,
@@ -277,7 +291,11 @@ def _is_function_start(
         if tok.type == lexer_type.LParen:
             paren_seen = True
             break
-        if tok.type == lexer_type.RParen or tok.type == lexer_type.LBrace or tok.type == lexer_type.RBrace:
+        if (
+            tok.type == lexer_type.RParen
+            or tok.type == lexer_type.LBrace
+            or tok.type == lexer_type.RBrace
+        ):
             break
         scan += 1
 
@@ -294,7 +312,9 @@ def _is_function_start(
     return False
 
 
-def _extract_container_name(tokens: tuple[object, ...], start_index: int, lexer_type: object) -> str:
+def _extract_container_name(
+    tokens: tuple[object, ...], start_index: int, lexer_type: object
+) -> str:
     if start_index >= len(tokens):
         return "anonymous"
 
@@ -344,9 +364,7 @@ def _try_scan_function_slice(
         return None, start_index + 1
 
     signature_text = source_text[tokens[start_index].start : tokens[body_open_index].start]
-    body_text = source_text[
-        tokens[body_open_index].start : tokens[body_close_index].stop + 1
-    ]
+    body_text = source_text[tokens[body_open_index].start : tokens[body_close_index].stop + 1]
     container = ".".join(scope.name for scope in container_stack) or None
 
     return (
@@ -437,15 +455,9 @@ def _find_function_body_open(
             angle_depth += 1
         elif text == ">":
             angle_depth = max(angle_depth - 1, 0)
-        elif (
-            token.type == lexer_type.LBrace
-            and paren_depth == square_depth == angle_depth == 0
-        ):
+        elif token.type == lexer_type.LBrace and paren_depth == square_depth == angle_depth == 0:
             return index
-        elif (
-            token.type == lexer_type.RBrace
-            and paren_depth == square_depth == angle_depth == 0
-        ):
+        elif token.type == lexer_type.RBrace and paren_depth == square_depth == angle_depth == 0:
             return None
 
         index += 1
@@ -479,6 +491,7 @@ def _compact_source_text(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Lightweight step extraction (token-based)
 # ---------------------------------------------------------------------------
+
 
 def _extract_lightweight_steps(
     body_text: str,
@@ -577,6 +590,7 @@ def _summarize_body_steps(
 # Summarized structured-step builders (token-based, no full parse)
 # ---------------------------------------------------------------------------
 
+
 def _build_summarized_structured_step(
     statement_text: str,
     tokens: tuple[object, ...],
@@ -597,7 +611,9 @@ def _build_summarized_structured_step(
         return _build_summarized_do_while_step(statement_text, tokens, base_offset, lexer_type)
     if starter == "switch":
         return _build_summarized_switch_step(statement_text, tokens, base_offset, lexer_type)
-    return ActionFlowStep(_summarize_structured_header(statement_text, tokens, base_offset, lexer_type))
+    return ActionFlowStep(
+        _summarize_structured_header(statement_text, tokens, base_offset, lexer_type)
+    )
 
 
 def _build_summarized_if_step(
@@ -755,9 +771,7 @@ def _build_summarized_switch_step(
         _slice_token_text(statement_text, tokens, base_offset, 1, open_index - 1)
     )
 
-    body_text = _slice_token_text(
-        statement_text, tokens, base_offset, open_index, close_index
-    )
+    body_text = _slice_token_text(statement_text, tokens, base_offset, open_index, close_index)
     cases = _summarize_switch_cases(body_text, lexer_type)
 
     return SwitchFlowStep(
@@ -792,10 +806,12 @@ def _summarize_switch_cases(
             if case_start is not None and case_label is not None:
                 case_tokens = tokens[case_start:index]
                 case_text = body_text[case_tokens[0].start : case_tokens[-1].stop + 1]
-                cases.append(SwitchCaseFlow(
-                    label=case_label,
-                    steps=_summarize_body_steps(case_text, lexer_type),
-                ))
+                cases.append(
+                    SwitchCaseFlow(
+                        label=case_label,
+                        steps=_summarize_body_steps(case_text, lexer_type),
+                    )
+                )
             case_start = None
             case_label = None
 
@@ -805,9 +821,7 @@ def _summarize_switch_cases(
                 if tokens[scan].text == ":":
                     label_end = scan
                     break
-            case_label = _compact_label_text(
-                body_text[tok.start : tokens[label_end].stop + 1]
-            )
+            case_label = _compact_label_text(body_text[tok.start : tokens[label_end].stop + 1])
             index = label_end + 1
             case_start = index
             continue
@@ -819,10 +833,12 @@ def _summarize_switch_cases(
         case_tokens = tokens[case_start:close_index]
         if case_tokens:
             case_text = body_text[case_tokens[0].start : case_tokens[-1].stop + 1]
-            cases.append(SwitchCaseFlow(
-                label=case_label,
-                steps=_summarize_body_steps(case_text, lexer_type),
-            ))
+            cases.append(
+                SwitchCaseFlow(
+                    label=case_label,
+                    steps=_summarize_body_steps(case_text, lexer_type),
+                )
+            )
 
     return tuple(cases)
 
@@ -845,6 +861,7 @@ def _summarize_structured_header(
 # ---------------------------------------------------------------------------
 # Token-level helpers
 # ---------------------------------------------------------------------------
+
 
 def _find_top_level_code_block(
     tokens: tuple[object, ...],
@@ -933,11 +950,7 @@ def _split_top_level_statement_spans(
         next_token = tokens[index + 1] if index + 1 < close_index else None
         at_statement_end = False
 
-        if (
-            token.text == ";"
-            and brace_depth == 1
-            and paren_depth == square_depth == 0
-        ):
+        if token.text == ";" and brace_depth == 1 and paren_depth == square_depth == 0:
             at_statement_end = True
         elif (
             next_token is not None
@@ -952,9 +965,7 @@ def _split_top_level_statement_spans(
 
         if at_statement_end and statement_start_index is not None:
             statement_tokens = tokens[statement_start_index : index + 1]
-            statement_text = body_text[
-                statement_tokens[0].start : statement_tokens[-1].stop + 1
-            ]
+            statement_text = body_text[statement_tokens[0].start : statement_tokens[-1].stop + 1]
             if statement_text.strip():
                 spans.append((statement_text, statement_tokens, statement_tokens[0].start))
             statement_start_index = None
@@ -990,6 +1001,7 @@ def _lex_default_tokens(source_text: str, lexer_type: object) -> tuple[object, .
 # ---------------------------------------------------------------------------
 # Visitor-based extraction (ANTLR parse tree)
 # ---------------------------------------------------------------------------
+
 
 def _build_control_flow_visitor(visitor_base: type, context: _ExtractorContext) -> type:
     class MetalControlFlowVisitor(visitor_base):
@@ -1055,7 +1067,7 @@ def _build_control_flow_visitor(visitor_base: type, context: _ExtractorContext) 
             # functionBody: LBrace statement* RBrace | ...
             if function_body_ctx.LBrace() is not None:
                 steps: list[ControlFlowStep] = []
-                for stmt_ctx in (function_body_ctx.statement() or []):
+                for stmt_ctx in function_body_ctx.statement() or []:
                     extracted = self._extract_statement(stmt_ctx)
                     if extracted is not None:
                         steps.append(extracted)
@@ -1081,9 +1093,11 @@ def _build_control_flow_visitor(visitor_base: type, context: _ExtractorContext) 
                 return ActionFlowStep(context.compact(statement_ctx.jumpStatement()))
             if statement_ctx.compoundStatement() is not None:
                 inner = self._extract_compound_statement(statement_ctx.compoundStatement())
-                if inner:
-                    return ActionFlowStep("{ ... }")
-                return None
+                if not inner:
+                    return None
+                if len(inner) == 1:
+                    return inner[0]
+                return ActionFlowStep("{ ... }")
             if statement_ctx.declarationStatement() is not None:
                 return ActionFlowStep(context.compact(statement_ctx.declarationStatement()))
             if statement_ctx.expressionStatement() is not None:
@@ -1132,9 +1146,9 @@ def _build_control_flow_visitor(visitor_base: type, context: _ExtractorContext) 
 
         def _extract_switch_like(self, sel_ctx) -> SwitchFlowStep:
             cases: list[SwitchCaseFlowStep] = []
-            for case_group_ctx in (sel_ctx.caseGroup() or []):
+            for case_group_ctx in sel_ctx.caseGroup() or []:
                 cases.append(self._extract_case_group(case_group_ctx))
-            
+
             expr = sel_ctx.expression()
             cond_text = context.compact(expr) if expr is not None else "expression"
             return SwitchFlowStep(
@@ -1170,7 +1184,11 @@ def _build_control_flow_visitor(visitor_base: type, context: _ExtractorContext) 
         def _extract_while_statement(self, iter_ctx) -> WhileFlowStep:
             stmt = iter_ctx.statement()
             body_steps = self._extract_statement_as_tuple(stmt) if stmt else ()
-            cond_text = context.compact(iter_ctx.expression()) if iter_ctx.expression() is not None else "condition"
+            cond_text = (
+                context.compact(iter_ctx.expression())
+                if iter_ctx.expression() is not None
+                else "condition"
+            )
             return WhileFlowStep(
                 condition=f"while ({cond_text})",
                 body_steps=body_steps,
@@ -1200,7 +1218,7 @@ def _build_control_flow_visitor(visitor_base: type, context: _ExtractorContext) 
             # If header is too long, we might want to truncate, but for now just strip 'for'
             if header.startswith("for"):
                 header = header[3:].strip()
-            
+
             # If it contains the body, strip it
             if "{" in header:
                 header = header.split("{")[0].strip()
@@ -1208,7 +1226,7 @@ def _build_control_flow_visitor(visitor_base: type, context: _ExtractorContext) 
                 # If there's no brace but there is a statement, strip the statement text
                 stmt_text = context.compact(stmt)
                 if header.endswith(stmt_text):
-                    header = header[:-len(stmt_text)].strip()
+                    header = header[: -len(stmt_text)].strip()
 
             if header.startswith("("):
                 header = header[1:]
