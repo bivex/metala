@@ -16,7 +16,7 @@ from metala.domain.control_flow import (
     GuardFlowStep,
     IfFlowStep,
     RepeatWhileFlowStep,
-    SwitchCaseFlow,
+    SwitchCaseFlowStep,
     SwitchFlowStep,
     WhileFlowStep,
 )
@@ -38,7 +38,9 @@ class HtmlNassiDiagramRenderer(NassiDiagramRenderer):
         rules = []
         for i in range(51):
             c = colors[i % 5]
-            rules.append(f"      .ns-if-depth-{i}-triangle {{ fill: var(--{c}-dim); stroke: var(--{c}); }}")
+            rules.append(
+                f"      .ns-if-depth-{i}-triangle {{ fill: var(--{c}-dim); stroke: var(--{c}); }}"
+            )
             rules.append(f"      .ns-if-depth-{i}-diagonal {{ stroke: var(--{c}); }}")
         return "\n".join(rules)
 
@@ -642,14 +644,16 @@ class HtmlNassiDiagramRenderer(NassiDiagramRenderer):
                 "</div>"
             )
         if isinstance(step, DeferFlowStep):
-            return self._render_single_body("Defer", step.body_steps, depth=depth, css_class="ns-defer")
+            return self._render_single_body(
+                "Defer", step.body_steps, depth=depth, css_class="ns-defer"
+            )
         raise TypeError(f"unsupported step type: {type(step)!r}")
 
-    def _render_case(self, case: SwitchCaseFlow) -> str:
+    def _render_case(self, case: SwitchCaseFlowStep) -> str:
         return (
             '<div class="case">'
             f"{self._render_case_title(case.label)}"
-            f"{self._render_sequence(case.steps, depth=2)}"
+            f"{self._render_sequence(case.body_steps, depth=2)}"
             "</div>"
         )
 
@@ -719,14 +723,14 @@ class HtmlNassiDiagramRenderer(NassiDiagramRenderer):
             f'<foreignObject x="20" y="6" width="{content_width}" height="{text_height}" '
             'class="ns-if-condition-fo">'
             f'<div xmlns="http://www.w3.org/1999/xhtml" class="ns-if-condition-text">{badge} {escaped}</div>'
-            '</foreignObject>'
+            "</foreignObject>"
             f'<line x1="0" y1="{split_y}" x2="{half_width}" y2="{svg_height}" '
             f'class="ns-if-diagonal ns-if-depth-{d}-diagonal"/>'
             f'<line x1="{svg_width}" y1="{split_y}" x2="{half_width}" y2="{svg_height}" '
             f'class="ns-if-diagonal ns-if-depth-{d}-diagonal"/>'
             f'<text x="{yes_x}" y="{label_y}" text-anchor="middle" class="ns-if-label-yes">Yes</text>'
             f'<text x="{no_x}" y="{label_y}" text-anchor="middle" class="ns-if-label-no">No</text>'
-            '</svg>'
+            "</svg>"
             "</div>"
         )
 
@@ -735,7 +739,7 @@ class HtmlNassiDiagramRenderer(NassiDiagramRenderer):
         if case_count == 0:
             return (
                 '<div class="ns-node ns-switch">'
-                f"{self._render_header(f'Switch {step.expression}')}"
+                f"{self._render_header(f'Switch {step.condition}')}"
                 '<div class="empty">No cases.</div>'
                 "</div>"
             )
@@ -747,7 +751,7 @@ class HtmlNassiDiagramRenderer(NassiDiagramRenderer):
             cases_html.append(
                 f'<div class="ns-switch-case-col" aria-label="{escape(label)}">'
                 f'<div class="ns-switch-case-value">{escape(label)}</div>'
-                f'<div class="ns-switch-case-body">{self._render_sequence(case.steps, depth=depth + 1)}</div>'
+                f'<div class="ns-switch-case-body">{self._render_sequence(case.body_steps, depth=depth + 1)}</div>'
                 "</div>"
             )
 
@@ -756,7 +760,7 @@ class HtmlNassiDiagramRenderer(NassiDiagramRenderer):
 
         return (
             f'<div class="ns-node ns-switch ns-if-depth-{d}">'
-            f'<div class="ns-switch-header">{badge} switch {escape(step.expression)}</div>'
+            f'<div class="ns-switch-header">{badge} switch {escape(step.condition)}</div>'
             f'<div class="ns-switch-cases">{"".join(cases_html)}</div>'
             "</div>"
         )
